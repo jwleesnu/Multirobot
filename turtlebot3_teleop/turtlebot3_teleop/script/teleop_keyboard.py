@@ -1,5 +1,4 @@
-
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Copyright (c) 2011, Willow Garage, Inc.
 # All rights reserved.
@@ -66,7 +65,162 @@ ANG_VEL_STEP_SIZE = 0.02
 
 TURTLEBOT3_MODEL = os.environ['TURTLEBOT3_MODEL']
 
-msg = """
+class Turtle:
+    def __init__(self, node, name, is_real=False):
+        self.name = name
+        self.is_real = is_real
+        self.node = node
+        self.qos = QoSProfile(depth=10)
+        
+        # Initialize state variables
+        self.x = 0.0
+        self.y = 0.0
+        self.theta = 0.0
+        
+        self.target_linear_velocity = 0.0
+        self.target_angular_velocity = 0.0
+        self.target_theta = 0.0
+        self.K_p = 2 # proportional gain for angle
+        
+        self.l = 0.0    # distance to the midpoint
+        self.pose_theta = 0.0    # angle to the midpoint
+        
+        # Create publishers
+        self.cmd_vel_pub = node.create_publisher(Twist, f'/{name}/cmd_vel', self.qos)
+        if is_real:
+            self.cw_pub = node.create_publisher(Bool, f'/robot{name[-1]}/gpio_output_27', self.qos)
+            self.pwm_pub = node.create_publisher(Int16, f'/robot{name[-1]}/gpio_pwm_17', self.qos)
+        
+        # Create subscriber
+        self.pose_sub = node.create_subscription(
+            Pose, f'/{name}/pose', 
+            lambda msg: self.pose_callback(msg), 
+            self.qos
+        )
+
+    def set_target(self, linear_vel, target_theta, base_angle, control_angular_velocity):
+        self.target_linear_velocity = linear_vel
+        self.target_theta = target_theta + base_angle + 5/self.l * control_angular_velocity
+        angle_diff = (self.target_theta - self.theta) % (2 * np.pi)
+        if angle_diff < 0:
+            angle_diff += 2 * np.pi
+        if angle_diff > np.pi:
+            angle_diff -= 2 * np.pi
+        self.target_angular_velocity = self.K_p * angle_diff
+
+    def pose_callback(self, msg):
+        self.x = msg.x
+        self.y = msg.y
+        self.theta = msg.theta + np.pi
+
+    def publish_velocity(self):
+        twist = Twist()
+        twist.linear.x = self.target_linear_velocity
+        twist.linear.y = 0.0
+        twist.linear.z = 0.0
+        twist.angular.x = 0.0
+        twist.angular.y = 0.0
+        twist.angular.z = self.target_angular_velocity
+        self.cmd_vel_pub.publish(twist)
+
+    def publish_motor_control(self, cw_flag, pwm):
+        if self.is_real:
+            cw_msg = Bool()
+            cw_msg.data = cw_flag
+            self.cw_pub.publish(cw_msg)
+
+            pwm_msg = Int16()
+            pwm_msg.data = pwm
+            self.pwm_pub.publish(pwm_msg)
+
+class TurtleController:
+    def __init__(self):
+        self.node = rclpy.create_node('teleop_keyboard')
+        self.qos = QoSProfile(depth=10)
+        
+        # Create turtles list
+        self.turtles = []
+        # Add first two turtles (real robots)
+        self.turtles.append(Turtle(self.node, 'turtle1', is_real=True))
+        self.turtles.append(Turtle(self.node, 'turtle2', is_real=True))
+        # Add additional turtles (simulated)
+        self.turtles.append(Turtle(self.node, 'turtle3'))
+        
+        # Create midpoint publisher
+        self.midpoint_pub = self.node.create_publisher(Pose, '/mid_point/pose', self.qos)
+        self.desired_pub = self.node.create_publisher(Twist, '/desired/cmd_vel', self.qos)
+        
+        # Control state
+        self.control_first = True
+        self.control_second = False
+        self.control_all = False
+        self.control_linear_velocity = 0.0
+        self.control_angular_velocity = 0.0
+        self.theta_steer = 0.0
+        
+        # Motor control
+        self.height_count = 0
+        self.height_change_running = False
+        self.motor_status = "stop"
+        self.pwm = 0
+        self.cw_flag = True
+
+    def get_key(self, settings):
+        if os.name == 'nt':
+            return msvcrt.getch().decode('utf-8')
+        tty.setraw(sys.stdin.fileno())
+        rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+        if rlist:
+            key = sys.stdin.read(1)
+        else:
+            key = ''
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        return key
+
+    def change_height(self):
+        while self.height_change_running:
+            time.sleep(0.05)
+            if self.motor_status == "cw" and self.height_count < 255:
+                self.height_count += 1
+            elif self.motor_status == "ccw" and self.height_count > 0:
+                self.height_count -= 1
+            elif self.height_count >= 255 or self.height_count <= 0:
+                self.height_change_running = False
+                self.pwm = 0
+            
+            bar_length = 50
+            filled_length = int(bar_length * self.height_count / 255)
+            bar = '█' * filled_length + '-' * (bar_length - filled_length)
+            print(f'\rHeight Count: [{bar}] {self.height_count}/255', end='')
+            sys.stdout.flush()
+
+    def print_vels(self):
+        print('\ncurrently:\tlinear velocity {0}\t angular velocity {1}\t motor command {2}'.format(
+            self.control_linear_velocity,
+            self.control_angular_velocity,
+            self.motor_status))
+        sys.stdout.flush()
+
+    def run(self):
+        settings = None
+        if os.name != 'nt':
+            settings = termios.tcgetattr(sys.stdin)
+
+        try:
+            print(self.get_help_message())
+            while rclpy.ok():
+                key = self.get_key(settings)
+                self.process_key(key)
+                self.update_turtles()
+                rclpy.spin_once(self.node)
+
+        except Exception as e:
+            print(e)
+        finally:
+            self.stop_all()
+
+    def get_help_message(self):
+        return """
 Control Your TurtleBot3!
 ---------------------------
 Moving around:                     Motors:
@@ -74,8 +228,8 @@ Moving around:                     Motors:
    a    s    d                          k
         x                               m
 
-w/x : increase/decrease linear velocity (Burger : ~ 0.22, Waffle and Waffle Pi : ~ 0.26)
-a/d : increase/decrease angular velocity (Burger : ~ 2.84, Waffle and Waffle Pi : ~ 1.82)
+w/x : increase/decrease linear velocity
+a/d : increase/decrease angular velocity
 i/k/m : move lift upwards/stop/downwards
 1/2/3 : controlling 1st robot, 2nd robot, all
 
@@ -84,546 +238,357 @@ space key, s : force stop
 CTRL-C to quit
 """
 
-e = """
-Communications Failed
-"""
-height_count = 0
-height_change_running = False
-motor_status = "stop"
-pwm = 0
-x1 = 0.0
-y1 = 0.0
-theta1 = 0.0
-x2 = 1.0
-y2 = 0.0
-theta2 = 0.0
-x3 = 1.0
-y3 = 0.0
-theta3 = 0.0
+    def process_key(self, key):
+        if key == 'w':
+            self.control_linear_velocity = self.check_linear_limit_velocity(
+                self.control_linear_velocity + LIN_VEL_STEP_SIZE)
+            self.print_vels()
+        elif key == 'x':
+            self.control_linear_velocity = self.check_linear_limit_velocity(
+                self.control_linear_velocity - LIN_VEL_STEP_SIZE)
+            self.print_vels()
+        elif key == 'a':
+            self.control_angular_velocity = self.check_angular_limit_velocity(
+                self.control_angular_velocity + ANG_VEL_STEP_SIZE)
+            self.print_vels()
+        elif key == 'd':
+            self.control_angular_velocity = self.check_angular_limit_velocity(
+                self.control_angular_velocity - ANG_VEL_STEP_SIZE)
+            self.print_vels()
+        elif key == '1':
+            self.control_first = True
+            self.control_second = False
+            self.control_all = False
+            print('controlling first robot')
+        elif key == '2':
+            self.control_first = False
+            self.control_second = True
+            self.control_all = False
+            print('controlling second robot')
+        elif key == '3':
+            self.control_first = True
+            self.control_second = True
+            self.control_all = True
+            xmid, ymid = self.update_midpoint()
+            #### This is temporary. acts worse when updated continuously.
+            for i in range(len(self.turtles)):
+                self.turtles[i].x_rel = self.turtles[i].x - xmid
+                self.turtles[i].y_rel = self.turtles[i].y - ymid
+                self.turtles[i].pose_theta = np.arctan2(self.turtles[i].y_rel, self.turtles[i].x_rel)
+        elif key == 'q':
+            self.theta_steer += 0.01 * np.pi
+        elif key == 'e':
+            self.theta_steer -= 0.01 * np.pi
+        elif key == ' ' or key == 's':
+            self.stop_all()
+        elif key == 'i':
+            self.handle_motor_up()
+        elif key == 'k':
+            self.handle_motor_stop()
+        elif key == 'm':
+            self.handle_motor_down()
+        elif key == '\x03':
+            raise KeyboardInterrupt
 
-def get_key(settings):
-    if os.name == 'nt':
-        return msvcrt.getch().decode('utf-8')
-    tty.setraw(sys.stdin.fileno())
-    rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
-    if rlist:
-        key = sys.stdin.read(1)
-    else:
-        key = ''
-
-    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-    return key
-
-
-def change_height():
-    global height_count, height_change_running, motor_status, pwm
-    while height_change_running:
-        time.sleep(0.05)
-        if motor_status == "cw" and height_count < 255:
-            height_count += 1
-        elif motor_status == "ccw" and height_count > 0:
-            height_count -= 1
-        elif height_count >=255 or height_count <=0:
-            height_change_running = False
-            pwm = 0
-            
+    def update_midpoint(self):
+        # Calculate midpoint between first two turtles
+        xmid = (self.turtles[1].x + self.turtles[0].x) / 2
+        ymid = (self.turtles[1].y + self.turtles[0].y) / 2
+        l = np.linalg.norm(np.array([self.turtles[1].x - self.turtles[0].x, 
+                                   self.turtles[1].y - self.turtles[0].y]))
         
-        # 바 형태로 출력
-        bar_length = 50  # 바의 길이
-        filled_length = int(bar_length * height_count / 255)  # 채워진 길이 비율
-        bar = '█' * filled_length + '-' * (bar_length - filled_length)  # 바 생성
-        print(f'\rHeight Count: [{bar}] {height_count}/255', end='')  # 출력 업데이트
-        sys.stdout.flush()  # 버퍼 비우기
+        # Calculate relative positions for all turtles
+        for i in range(len(self.turtles)):
+            self.turtles[i].l = np.linalg.norm(np.array([self.turtles[i].x - xmid, 
+                                                       self.turtles[i].y - ymid]))
+            self.turtles[i].pose_theta = np.arctan2(self.turtles[i].y - ymid, 
+                                                  self.turtles[i].x - xmid) - \
+                                        np.arctan2(self.turtles[1].y - self.turtles[0].y, 
+                                                 self.turtles[1].x - self.turtles[0].x)
+            
+            if i >= 2:  # For additional turtles
+                print(f'Turtle {i+1} - l{i+1}={self.turtles[i].l:.2f}, pose_theta{i+1}={self.turtles[i].pose_theta/np.pi:.2f}pi')
+        
+        print('controlling all robots, l =', l)
+        return xmid, ymid
 
+    def update_turtles(self):
+        if self.control_all:
+            _,_=self.update_midpoint()
+            self.update_all_control()
+        else:
+            self.update_single_control()
 
+    def update_all_control(self):
+        # Calculate base angle and velocities
+        base_angle = np.arctan2(self.turtles[1].y - self.turtles[0].y, 
+                              self.turtles[1].x - self.turtles[0].x)
+        
+        # Normalize theta_steer
+        self.theta_steer = self.theta_steer % (2 * np.pi)
+        while self.theta_steer < 0:
+            self.theta_steer += 2 * np.pi
+            
+        print(f'theta_steer = {self.theta_steer/np.pi:.2f}pi')
+        
+        # Calculate and publish velocities
+        self.calculate_target_velocities(
+            self.control_linear_velocity,
+            self.control_angular_velocity,
+            base_angle
+        )
+        
+        # Publish velocities
+        for turtle in self.turtles:
+            turtle.publish_velocity()
+        
+        # Publish midpoint and desired velocities
+        self.publish_midpoint_and_desired(
+            self.control_linear_velocity,
+            self.control_angular_velocity,
+            base_angle
+        )
 
-def print_vels(target_linear_velocity, target_angular_velocity,motor_status):
-    print('\ncurrently:\tlinear velocity {0}\t angular velocity {1}\t motor command {2}'.format(
-        target_linear_velocity,
-        target_angular_velocity,
-        motor_status))
-    sys.stdout.flush()
+    def calculate_target_velocities(self, control_linear_velocity, control_angular_velocity, base_angle):
+        if np.abs(control_angular_velocity) < 1e-2:
+            # Straight line motion
+            for i in range(len(self.turtles)):
+                self.turtles[i].set_target(control_linear_velocity, self.theta_steer, base_angle, control_angular_velocity)
+                
+        elif np.abs(control_linear_velocity) < 1e-2 and np.abs(control_angular_velocity) > 1e-2:
+            # Pure rotation
+            if control_angular_velocity > 0:
+                self.turtles[0].set_target(self.turtles[0].l * control_angular_velocity, np.pi/2, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(self.turtles[1].l * control_angular_velocity, 3*np.pi/2, base_angle, control_angular_velocity)
+                for i in range(2, len(self.turtles)):
+                    self.turtles[i].set_target(
+                        self.turtles[i].l * control_angular_velocity,
+                        self.turtles[i].pose_theta - np.pi/2,
+                        base_angle,
+                        control_angular_velocity
+                    )
+            else:
+                self.turtles[0].set_target(-self.turtles[0].l * control_angular_velocity, 3*np.pi/2, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(-self.turtles[1].l * control_angular_velocity, np.pi/2, base_angle, control_angular_velocity)
+                for i in range(2, len(self.turtles)):
+                    self.turtles[i].set_target(
+                        -self.turtles[i].l * control_angular_velocity,
+                        self.turtles[i].pose_theta + np.pi/2,
+                        base_angle,
+                        control_angular_velocity
+                    )
+        else:
+            print('control_angular_velocity =', control_angular_velocity)
+            
+            if ((control_angular_velocity < 0 and ((self.theta_steer >= 0 and self.theta_steer < np.pi/2) or (self.theta_steer <= 2*np.pi and self.theta_steer > 3/2*np.pi)) and control_linear_velocity > 0) or\
+                (control_angular_velocity > 0 and ((self.theta_steer >= 0 and self.theta_steer < np.pi/2) or (self.theta_steer <= 2*np.pi and self.theta_steer > 3/2*np.pi)) and control_linear_velocity < 0)): #R_D
+                print('R_D')#OK
+                rho = -control_linear_velocity / control_angular_velocity
+                psi = self.theta_steer - np.pi/2
+                x = rho * np.cos(psi)
+                y = rho * np.sin(psi)
+                target_theta1 = np.arctan2(y, x - self.turtles[0].l) + np.pi/2
+                target_theta2 = np.arctan2(y, x + self.turtles[1].l) + 3*np.pi/2
+                target_vel1 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
+                target_vel2 = control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
+                target_theta2 += np.pi
+                
+                self.turtles[0].set_target(target_vel1, target_theta1, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(target_vel2, target_theta2, base_angle, control_angular_velocity)
+                
+                for i in range(2, len(self.turtles)):
+                    ri = np.linalg.norm(np.array([
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x,
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y
+                    ]))
+                    target_thetai = np.arctan2(
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y,
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x
+                    ) + np.pi/2
+                    target_veli = -ri * control_angular_velocity
+                    self.turtles[i].set_target(target_veli, target_thetai, base_angle, control_angular_velocity)
 
+            elif ((control_angular_velocity > 0 and (self.theta_steer > np.pi/2 and self.theta_steer < 3/2 * np.pi) and control_linear_velocity > 0) or\
+                (control_angular_velocity < 0 and (self.theta_steer > np.pi/2 and self.theta_steer < 3/2 * np.pi) and control_linear_velocity < 0)): #L_D
+                print('L_D')
+                rho = control_linear_velocity / control_angular_velocity
+                psi = self.theta_steer + np.pi/2
+                x = rho * np.cos(psi)
+                y = rho * np.sin(psi)
+                target_theta1 = np.arctan2(y, x - self.turtles[0].l) - np.pi/2
+                target_theta2 = np.arctan2(y, x + self.turtles[1].l) - np.pi/2
+                target_vel1 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
+                target_vel2 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
+                
+                self.turtles[0].set_target(target_vel1, target_theta1, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(target_vel2, target_theta2, base_angle, control_angular_velocity)
+                
+                for i in range(2, len(self.turtles)):
+                    ri = np.linalg.norm(np.array([
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x,
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y
+                    ]))
+                    target_thetai = np.arctan2(
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y,
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x
+                    ) - np.pi/2
+                    target_veli = ri * control_angular_velocity
+                    self.turtles[i].set_target(target_veli, target_thetai, base_angle, control_angular_velocity)
 
-def make_simple_profile(output, input, slop):
-    if input > output:
-        output = min(input, output + slop)
-    elif input < output:
-        output = max(input, output - slop)
-    else:
-        output = input
+            elif ((control_angular_velocity > 0 and ((self.theta_steer >= 0 and self.theta_steer < np.pi/2) or (self.theta_steer <= 2*np.pi and self.theta_steer > 3/2*np.pi)) and control_linear_velocity > 0) or\
+                (control_angular_velocity < 0 and ((self.theta_steer >= 0 and self.theta_steer < np.pi/2) or (self.theta_steer <= 2*np.pi and self.theta_steer > 3/2*np.pi)) and control_linear_velocity < 0)): #L_U
+                print('L_U')#OK
+                rho = control_linear_velocity / control_angular_velocity
+                psi = self.theta_steer + np.pi/2
+                x = rho * np.cos(psi)
+                y = rho * np.sin(psi)
+                target_theta1 = np.arctan2(y, x - self.turtles[0].l) - np.pi/2
+                target_theta2 = np.arctan2(y, x + self.turtles[1].l) - np.pi/2
+                target_vel1 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
+                target_vel2 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
+                
+                self.turtles[0].set_target(target_vel1, target_theta1, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(target_vel2, target_theta2, base_angle, control_angular_velocity)
+                
+                for i in range(2, len(self.turtles)):
+                    ri = np.linalg.norm(np.array([
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x,
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y
+                    ]))
+                    target_thetai = np.arctan2(
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y,
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x
+                    ) - np.pi/2
+                    target_veli = ri * control_angular_velocity
+                    self.turtles[i].set_target(target_veli, target_thetai, base_angle, control_angular_velocity)
 
-    return output
+            elif ((control_angular_velocity > 0 and ((self.theta_steer > np.pi/2 and self.theta_steer < 3/2 * np.pi) or (self.theta_steer > 3/2 * np.pi and self.theta_steer < 2*np.pi)) and control_linear_velocity < 0) or\
+                (control_angular_velocity < 0 and ((self.theta_steer > np.pi/2 and self.theta_steer < 3/2 * np.pi) or (self.theta_steer > 3/2 * np.pi and self.theta_steer < 2*np.pi)) and control_linear_velocity > 0)): #R_U
+                print('R_U')
+                rho = -control_linear_velocity / control_angular_velocity
+                psi = self.theta_steer - np.pi/2
+                x = rho * np.cos(psi)
+                y = rho * np.sin(psi)
+                target_theta1 = np.arctan2(y, x - self.turtles[0].l) + np.pi/2
+                target_theta2 = np.arctan2(y, x + self.turtles[1].l) + np.pi/2
+                target_vel1 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
+                target_vel2 = -control_angular_velocity * (self.turtles[0].l + self.turtles[1].l) / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
+                
+                self.turtles[0].set_target(target_vel1, target_theta1, base_angle, control_angular_velocity)
+                self.turtles[1].set_target(target_vel2, target_theta2, base_angle, control_angular_velocity)
+                
+                for i in range(2, len(self.turtles)):
+                    ri = np.linalg.norm(np.array([
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x,
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y
+                    ]))
+                    target_thetai = np.arctan2(
+                        self.turtles[i].l * np.sin(self.turtles[i].pose_theta) + y,
+                        self.turtles[i].l * np.cos(self.turtles[i].pose_theta) + x
+                    ) + np.pi/2
+                    target_veli = -ri * control_angular_velocity
+                    self.turtles[i].set_target(target_veli, target_thetai, base_angle, control_angular_velocity)
 
+    def publish_midpoint_and_desired(self, lin_vel, ang_vel, base_angle):
+        # Publish midpoint pose
+        midpoint = Pose()
+        midpoint.x = (self.turtles[1].x + self.turtles[0].x) / 2
+        midpoint.y = (self.turtles[1].y + self.turtles[0].y) / 2
+        midpoint.theta = self.theta_steer
+        midpoint.linear_velocity = lin_vel
+        midpoint.angular_velocity = ang_vel
+        self.midpoint_pub.publish(midpoint)
+        
+        # Publish desired velocities
+        desired = Twist()
+        desired.linear.x = lin_vel
+        desired.linear.y = 0.0
+        desired.linear.z = 0.0
+        desired.angular.x = base_angle
+        desired.angular.y = self.theta_steer
+        desired.angular.z = ang_vel
+        self.desired_pub.publish(desired)
+
+    def update_single_control(self):
+
+        if self.control_first:
+            self.turtles[0].target_linear_velocity = self.control_linear_velocity
+            self.turtles[0].target_angular_velocity = self.control_angular_velocity
+            self.turtles[0].publish_velocity()
+            self.turtles[0].publish_motor_control(self.cw_flag, self.pwm)
+        if self.control_second:
+            self.turtles[1].target_linear_velocity = self.control_linear_velocity
+            self.turtles[1].target_angular_velocity = self.control_angular_velocity
+            self.turtles[1].publish_velocity()
+            self.turtles[1].publish_motor_control(self.cw_flag, self.pwm)
+
+    def stop_all(self):
+        self.control_linear_velocity = 0.0
+        self.control_angular_velocity = 0.0
+        self.pwm = 0
+        self.motor_status = "stop"
+        self.height_change_running = False
+        self.print_vels()
+
+    def handle_motor_up(self):
+        if self.height_count < 255:
+            self.cw_flag = True
+            self.pwm = 128
+            self.motor_status = "cw"
+            self.height_change_running = True
+            threading.Thread(target=self.change_height).start()
+            self.print_vels()
+        else:
+            self.pwm = 0
+            self.motor_status = "stop"
+            self.print_vels()
+            print("!!!height upper limit reached!!!")
+
+    def handle_motor_stop(self):
+        self.pwm = 0
+        self.motor_status = "stop"
+        self.height_change_running = False
+        self.print_vels()
+
+    def handle_motor_down(self):
+        if self.height_count > 0:
+            self.cw_flag = False
+            self.pwm = 128
+            self.motor_status = "ccw"
+            self.height_change_running = True
+            threading.Thread(target=self.change_height).start()
+            self.print_vels()
+        else:
+            self.pwm = 0
+            self.motor_status = "stop"
+            self.print_vels()
+            print("!!!height lower limit reached!!!")
+
+    @staticmethod
+    def check_linear_limit_velocity(velocity):
+        if TURTLEBOT3_MODEL == 'burger':
+            return constrain(velocity, -BURGER_MAX_LIN_VEL, BURGER_MAX_LIN_VEL)
+        else:
+            return constrain(velocity, -WAFFLE_MAX_LIN_VEL, WAFFLE_MAX_LIN_VEL)
+
+    @staticmethod
+    def check_angular_limit_velocity(velocity):
+        if TURTLEBOT3_MODEL == 'burger':
+            return constrain(velocity, -BURGER_MAX_ANG_VEL, BURGER_MAX_ANG_VEL)
+        else:
+            return constrain(velocity, -WAFFLE_MAX_ANG_VEL, WAFFLE_MAX_ANG_VEL)
 
 def constrain(input_vel, low_bound, high_bound):
     if input_vel < low_bound:
         input_vel = low_bound
     elif input_vel > high_bound:
         input_vel = high_bound
-    else:
-        input_vel = input_vel
-
     return input_vel
 
-
-def check_linear_limit_velocity(velocity):
-    if TURTLEBOT3_MODEL == 'burger':
-        return constrain(velocity, -BURGER_MAX_LIN_VEL, BURGER_MAX_LIN_VEL)
-    else:
-        return constrain(velocity, -WAFFLE_MAX_LIN_VEL, WAFFLE_MAX_LIN_VEL)
-    
-
-
-def check_angular_limit_velocity(velocity):
-    if TURTLEBOT3_MODEL == 'burger':
-        return constrain(velocity, -BURGER_MAX_ANG_VEL, BURGER_MAX_ANG_VEL)
-    else:
-        return constrain(velocity, -WAFFLE_MAX_ANG_VEL, WAFFLE_MAX_ANG_VEL)
-
-def pose_callback(msg):
-    #print('callbacked',msg.x,' ',msg.y)
-    global x1, y1, theta1
-    x1 = msg.x
-    y1 = msg.y
-    theta1 = msg.theta + np.pi
-
-def pose_callback2(msg):
-    #print('callbacked',msg.x, ' ',msg.y)
-    global x2, y2, theta2
-    x2 = msg.x
-    y2 = msg.y
-    theta2 = msg.theta + np.pi
-
-def pose_callback3(msg):
-    #print('callbacked',msg.x, ' ',msg.y, msg.theta)
-    global x3, y3, theta3
-    x3 = msg.x
-    y3 = msg.y
-    theta3 = msg.theta + np.pi
-
-# def odom_callback1(msg):
-#     x1 = msg.pose.pose.position.x
-#     y1 = msg.pose.pose.position.y
-#     theta1 = Quattoyaw(msg.pose.pose.orientation)
-
 def main():
-    global motor_status,height_change_running,pwm,x1,y1,theta1,x2,y2,theta2# 전역 변수 사용 선언
-    
-    settings = None
-    if os.name != 'nt':
-        settings = termios.tcgetattr(sys.stdin)
-
     rclpy.init()
-    ###### for real
-    qos = QoSProfile(depth=10)
-    node = rclpy.create_node('teleop_keyboard')
-    pub1 = node.create_publisher(Twist, '/turtle1/cmd_vel', qos)
-    pubcw1 = node.create_publisher(Bool, '/robot1/gpio_output_27', qos)
-    pubpwm1 = node.create_publisher(Int16, '/robot1/gpio_pwm_17', qos)
-    pub2 = node.create_publisher(Twist, '/turtle2/cmd_vel', qos)
-    pubcw2 = node.create_publisher(Bool, '/robot2/gpio_output_27', qos)
-    pubpwm2 = node.create_publisher(Int16, '/robot2/gpio_pwm_17', qos)
-    ###### for simulation
-    pub3 = node.create_publisher(Twist, '/turtle3/cmd_vel', qos)
-    pubmid = node.create_publisher(Pose,'/mid_point/pose',qos)
-    pubdes = node.create_publisher(Twist, '/desired/cmd_vel',qos)
-    ######
-    qossub1 = QoSProfile(depth=10)
-    qossub2 = QoSProfile(depth=10)
-    qossub3 = QoSProfile(depth=10)
-    qosodom1 = QoSProfile(depth=10)
-    node.create_subscription(Pose, '/turtle1/pose', pose_callback, qossub1)
-    node.create_subscription(Pose, '/turtle2/pose', pose_callback2, qossub2)
-    node.create_subscription(Pose, '/turtle3/pose', pose_callback3, qossub3)
-    # node.create_subscription(Odometry,'/robot1/odom', odom_callback1, qosodom1)
-
-    status = 0
-    target_linear_velocity = 0.0
-    target_angular_velocity = 0.0
-    control_linear_velocity = 0.0
-    control_angular_velocity = 0.0
-    cw_flag = True  # cw
-    control_first = True
-    control_second = False
-    l = 10.0
-    R1 = 0.0
-    R2 = 0.0
-    theta_steer = 0.0
-
-    try:
-        print(msg)
-        
-        while( rclpy.ok() ):
-            #print(x1,x2,y1,y2)
-            key = get_key(settings)
-            if key == 'w':
-                target_linear_velocity = check_linear_limit_velocity(target_linear_velocity + LIN_VEL_STEP_SIZE)
-                status += 1
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            elif key == 'x':
-                target_linear_velocity = check_linear_limit_velocity(target_linear_velocity - LIN_VEL_STEP_SIZE)
-                status += 1
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            elif key == 'a':
-                target_angular_velocity = check_angular_limit_velocity(target_angular_velocity + ANG_VEL_STEP_SIZE)
-                status += 1
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            elif key == 'd':
-                target_angular_velocity = check_angular_limit_velocity(target_angular_velocity - ANG_VEL_STEP_SIZE)
-                status += 1
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            if key == '1':
-                control_first = True
-                control_second = False
-                print('controlling first robot')
-            elif key == '2':
-                control_first = False
-                control_second = True
-                print('controlling second robot')
-            elif key == '3':
-                control_first = True
-                control_second = True
-                xmid = (x2+x1)/2
-                ymid = (y2+y1)/2
-                l = np.linalg.norm(np.array([x2-x1,y2-y1]))
-                l3 = np.linalg.norm(np.array([x3 - xmid , y3 - ymid]))
-                pose_theta3 = np.arctan2(y3 - ymid, x3 -xmid ) - np.arctan2(y2-y1,x2-x1)
-                x3_rel = l3 * np.cos(pose_theta3 )
-                y3_rel = l3 * np.sin(pose_theta3 )
-                print('controlling both robots, l =',l,'l3=',l3,'pose_theta3 = ',pose_theta3 / np.pi ,'pi')
-            elif key == 'q':
-                theta_steer += 0.01 * np.pi
-                #print('theta_steer = ', theta_steer)
-            elif key == 'e':
-                theta_steer -= 0.01 * np.pi
-                #print('theta_steer = ', theta_steer)
-            elif key == ' ' or key == 's':
-                target_linear_velocity = 0.0
-                control_linear_velocity = 0.0
-                target_angular_velocity = 0.0
-                control_angular_velocity = 0.0
-                pwm = 0
-                motor_status = "stop"
-                height_change_running = False
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            elif key == 'i':
-                if height_count < 255:
-                    cw_flag = True
-                    pwm = 128
-                    motor_status = "cw"
-                    height_change_running = True
-                    threading.Thread(target=change_height).start()
-                    print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-                else:
-                    pwm = 0
-                    motor_status = "stop"
-                    print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-                    print("!!!height upper limit reached!!!")
-            elif key == 'k':
-                pwm = 0
-                motor_status = "stop"
-                height_change_running = False
-                print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-            elif key == 'm':
-                if height_count > 0:
-                    cw_flag = False
-                    pwm = 128
-                    motor_status = "ccw"
-                    height_change_running = True
-                    threading.Thread(target=change_height).start()
-                    print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-                else:
-                    pwm = 0
-                    motor_status = "stop"
-                    print_vels(target_linear_velocity, target_angular_velocity, motor_status)
-                    print("!!!height lower limit reached!!!")
-            else:
-                if (key == '\x03'):
-                    break
-
-            if status == 20:
-                print(msg)
-                status = 0
-
-            #control_linear_velocity1 = 0.0
-            #control_linear_velocity2 = 0.0
-            if control_first and control_second: # constraints should be defined
-                base_angle = np.arctan2(y2-y1,x2 - x1)
-                #print(base_angle/np.pi, 'pi')
-                
-                control_linear_velocity = target_linear_velocity
-                control_angular_velocity = target_angular_velocity
-                # control_linear_velocity = make_simple_profile(
-                #     control_linear_velocity,
-                #     target_linear_velocity,
-                #     (LIN_VEL_STEP_SIZE / 2.0))
-                # control_angular_velocity = make_simple_profile(
-                #     control_angular_velocity,
-                #     target_angular_velocity,
-                #     (ANG_VEL_STEP_SIZE / 2.0))
-                dt = 1 / 9.5
-                # theta_steer_acc += control_angular_velocity * dt
-
-                # theta_steer_acc = theta_steer_acc % (2*np.pi)
-                # while (theta_steer_acc < 0) : 
-                #     theta_steer_acc += 2*np.pi
-                #theta_steer = theta_steer_acc - base_angle
-                theta_steer = theta_steer % (2*np.pi)
-                while (theta_steer < 0) : 
-                    theta_steer += 2*np.pi
-                # if control_angular_velocity > 0 :
-                #     psi = theta_steer - np.pi / 2
-                # else :
-                #     psi = theta_steer + np.pi / 2
-                #print(theta_steer_acc)
-                #print(base_angle)
-                print(f'theta_steer = {theta_steer/np.pi:.2f}pi')
-
-
-                if np.abs(control_angular_velocity) < 1e-2:
-                    target_linear_velocity1 = control_linear_velocity
-                    target_linear_velocity2 = control_linear_velocity
-                    target_theta1 = theta_steer
-                    target_theta2 = theta_steer
-                    ###
-                    target_linear_velocity3 = control_linear_velocity
-                    target_theta3 = theta_steer
-
-                elif np.abs(control_angular_velocity) > 1e-2 and np.abs(control_linear_velocity) < 1e-2 :
-                    if(control_angular_velocity > 0):
-                        target_theta1 = np.pi/2 
-                        target_theta2 = 3*np.pi/2 
-                        target_linear_velocity1 = l/2 * control_angular_velocity
-                        target_linear_velocity2 = l/2 * control_angular_velocity
-                        target_theta3 = pose_theta3 - np.pi/2
-                        target_linear_velocity3 = l3 * control_angular_velocity
-                        
-                    else:
-                        target_theta1 = 3*np.pi/2 
-                        target_theta2 = np.pi/2 
-                        target_linear_velocity1 = -l/2 * control_angular_velocity
-                        target_linear_velocity2 = -l/2 * control_angular_velocity
-                        target_theta3 = pose_theta3 + np.pi/2
-                        target_linear_velocity3 = -l3 * control_angular_velocity
-                    
-
-                else:
-                    print('control_angular_velocity =',control_angular_velocity)
-
-                    if ((control_angular_velocity < 0 and ((theta_steer >= 0 and theta_steer < np.pi/2) or (theta_steer <= 2*np.pi and theta_steer > 3/2*np.pi)) and control_linear_velocity > 0) or\
-                        (control_angular_velocity > 0 and ((theta_steer >= 0 and theta_steer < np.pi/2) or (theta_steer <= 2*np.pi and theta_steer > 3/2*np.pi)) and control_linear_velocity < 0)): #R_D
-                        print('R_D')#OK
-                        rho = -control_linear_velocity / control_angular_velocity
-                        psi = theta_steer - np.pi/2
-                        x = rho * np.cos(psi)
-                        y = rho * np.sin(psi)
-                        target_theta1 = np.arctan2(y, x - l/2) + 1/2 * np.pi  
-                        target_theta2 = np.arctan2(y, x + l/2) + 3/2 * np.pi
-                        target_linear_velocity1 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
-                        target_linear_velocity2 = control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
-                        target_theta2 +=np.pi
-                        r3 = np.linalg.norm([x + x3_rel,y + y3_rel])
-                        target_theta3 = np.arctan2(y + y3_rel,x + x3_rel) + np.pi/2
-                        target_linear_velocity3 = -r3 * control_angular_velocity
-                        
-
-                    if ((control_angular_velocity > 0 and (theta_steer > np.pi/2 and theta_steer < 3/2 * np.pi) and control_linear_velocity > 0) or\
-                        (control_angular_velocity < 0 and (theta_steer > np.pi/2 and theta_steer < 3/2 * np.pi) and control_linear_velocity < 0)): #L_D
-                        print('L_D')
-                        rho = control_linear_velocity / control_angular_velocity
-                        psi = theta_steer + np.pi/2
-                        x = rho * np.cos(psi)
-                        y = rho * np.sin(psi)
-                        target_theta1 = np.arctan2(y, x - l/2) - 1/2 * np.pi 
-                        target_theta2 = np.arctan2(y, x + l/2) - 1/2 * np.pi
-                        target_linear_velocity1 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
-                        target_linear_velocity2 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
-                        r3 = np.linalg.norm([x + x3_rel,y + y3_rel])
-                        target_theta3 = np.arctan2(y + y3_rel,x + x3_rel) - np.pi/2
-                        target_linear_velocity3 = r3 * control_angular_velocity
-
-
-                    if ((control_angular_velocity > 0 and ((theta_steer >= 0 and theta_steer < np.pi/2) or (theta_steer <= 2*np.pi and theta_steer > 3/2*np.pi)) and control_linear_velocity > 0) or\
-                        (control_angular_velocity < 0 and ((theta_steer >= 0 and theta_steer < np.pi/2) or (theta_steer <= 2*np.pi and theta_steer > 3/2*np.pi)) and control_linear_velocity < 0)): #L_U
-                        print('L_U')#OK
-                        rho = control_linear_velocity / control_angular_velocity
-                        psi = theta_steer + np.pi/2
-                        x = rho * np.cos(psi)
-                        y = rho * np.sin(psi)
-                        target_theta1 = np.arctan2(y, x - l/2) - 1/2 * np.pi 
-                        target_theta2 = np.arctan2(y, x + l/2) - 1/2 * np.pi
-                        target_linear_velocity1 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
-                        target_linear_velocity2 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
-                        r3 = np.linalg.norm([x + x3_rel,y + y3_rel])
-                        target_theta3 = np.arctan2(y + y3_rel,x + x3_rel) - np.pi/2
-                        target_linear_velocity3 = r3 * control_angular_velocity
-
-
-                    if ((control_angular_velocity > 0 and (theta_steer > np.pi/2 and theta_steer < 3/2 * np.pi) and control_linear_velocity < 0) or\
-                        (control_angular_velocity < 0 and (theta_steer > np.pi/2 and theta_steer < 3/2 * np.pi) and control_linear_velocity > 0)): #R_U
-                        print('R_U')
-                        rho = -control_linear_velocity / control_angular_velocity
-                        psi = theta_steer - np.pi/2
-                        x = rho * np.cos(psi)
-                        y = rho * np.sin(psi)
-                        target_theta1 = np.arctan2(y, x - l/2) + 1/2 * np.pi 
-                        target_theta2 = np.arctan2(y, x + l/2) + 1/2 * np.pi
-                        target_linear_velocity1 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta2)
-                        target_linear_velocity2 = -control_angular_velocity * l / np.sin(target_theta2 - target_theta1) * np.cos(target_theta1)
-                        r3 = np.linalg.norm([x + x3_rel,y + y3_rel])
-                        target_theta3 = np.arctan2(y + y3_rel,x + x3_rel) + np.pi/2
-                        target_linear_velocity3 = -r3 * control_angular_velocity
-                    #target_theta3 = np.arctan2(y - (l3 * np.sin(pose_theta3)), x - (l3 * np.cos(pose_theta3))) + np.pi/2
-                    #target_linear_velocity3 = -control_angular_velocity * np.linalg.norm(np.array([l3 * np.cos(pose_theta3) - x , l3 * np.sin(pose_theta3) - y]))
-                    # print('x = ',x, 'y = ',y)
-                    # print('rho = ',rho, 'psi =',psi/np.pi,'pi ', 'target_theta1 =', target_theta1/np.pi,'pi ','target_theta2 = ',target_theta2/np.pi,'pi ','target_linear_velocity1 = ',target_linear_velocity1,'target_linear_velocity2 = ',target_linear_velocity2)
-                # print('target_theta3',target_theta3/np.pi,'pi','vel_theta3',target_linear_velocity3)
-                K_p = 2
-
-                twist1 = Twist()
-                twist2 = Twist()
-                twist3 = Twist()
-                twist1.linear.x = target_linear_velocity1
-                twist1.linear.y = 0.0
-                twist1.linear.z = 0.0
-                twist2.linear.x = target_linear_velocity2
-                twist2.linear.y = 0.0
-                twist2.linear.z = 0.0
-                twist3.linear.x = target_linear_velocity3
-                twist3.linear.y = 0.0
-                twist3.linear.z = 0.0
-                #print( 'target', (target_theta1 + base_angle + 2.5 / l *control_angular_velocity )/np.pi,'pi')
-                angle_diff1 = (target_theta1 + base_angle + 2.5 / l *control_angular_velocity - theta1) % (2 * np.pi)
-    
-                # 음수 값 처리
-                if angle_diff1 < 0:
-                    angle_diff1 += 2 * np.pi  # 음수일 경우 2π를 더해줍니다.
-
-                # 각도 차이를 -π에서 π로 조정
-                if angle_diff1 > np.pi:
-                    angle_diff1 -= 2 * np.pi
-
-                twist1.angular.x = 0.0
-                twist1.angular.y = 0.0
-                twist1.angular.z = K_p * angle_diff1
-
-                angle_diff2 = (target_theta2 + base_angle + 2.5 / l * control_angular_velocity - theta2) % (2 * np.pi)
-                
-                if angle_diff2 < 0:
-                    angle_diff2 += 2 * np.pi  
-                if angle_diff2 > np.pi:
-                    angle_diff2 -= 2 * np.pi
-
-                twist2.angular.x = 0.0
-                twist2.angular.y = 0.0
-                twist2.angular.z = K_p * angle_diff2
-
-                angle_diff3 = (target_theta3 + base_angle + 2.5 / l3 * control_angular_velocity - theta3) % (2 * np.pi)
-    
-                if angle_diff3 < 0:
-                    angle_diff3 += 2 * np.pi  
-
-                if angle_diff3 > np.pi:
-                    angle_diff3 -= 2 * np.pi
-
-                twist3.angular.x = 0.0
-                twist3.angular.y = 0.0
-                twist3.angular.z = K_p * angle_diff3
-
-                twistdes = Twist()
-                twistdes.linear.x = control_linear_velocity
-                twistdes.linear.y = 0.0
-                twistdes.linear.z = 0.0
-                twistdes.angular.x = base_angle #####
-                twistdes.angular.y = theta_steer ###
-                twistdes.angular.z = control_angular_velocity
-
-                ####simulation
-                posemid = Pose()
-                posemid.x = (x1+x2)/2
-                posemid.y = (y1+y2)/2
-                posemid.theta = theta_steer
-                posemid.linear_velocity = control_linear_velocity
-                posemid.angular_velocity = control_angular_velocity #base_angle
-                ####
-                pub1.publish(twist1)
-                pub2.publish(twist2)
-                pub3.publish(twist3)
-                pubmid.publish(posemid)
-                pubdes.publish(twistdes)
-                
-            
-            else:
-                twist = Twist()
-                control_linear_velocity = make_simple_profile(
-                    control_linear_velocity,
-                    target_linear_velocity,
-                    (LIN_VEL_STEP_SIZE / 2.0))
-
-                twist.linear.x = control_linear_velocity
-                twist.linear.y = 0.0
-                twist.linear.z = 0.0
-
-                control_angular_velocity = make_simple_profile(
-                    control_angular_velocity,
-                    target_angular_velocity,
-                    (ANG_VEL_STEP_SIZE / 2.0))
-
-                twist.angular.x = 0.0
-                twist.angular.y = 0.0
-                twist.angular.z = control_angular_velocity
-                if control_first == True and control_second == False:
-                    pub1.publish(twist)
-                
-                    cw_msg = Bool()
-                    cw_msg.data = cw_flag
-                    pubcw1.publish(cw_msg)
-
-                    pwm_msg = Int16()
-                    pwm_msg.data = pwm
-                    pubpwm1.publish(pwm_msg)
-                if control_second == True and control_first == False:
-                    pub2.publish(twist)
-                
-                    cw_msg = Bool()
-                    cw_msg.data = cw_flag
-                    pubcw2.publish(cw_msg)
-
-                    pwm_msg = Int16()
-                    pwm_msg.data = pwm
-                    pubpwm2.publish(pwm_msg)
-            rclpy.spin_once(node)
-            
-
-
-
-
-    except Exception as e:
-        print(e)
-
-    finally:
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.linear.y = 0.0
-        twist.linear.z = 0.0
-
-        twist.angular.x = 0.0
-        twist.angular.y = 0.0
-        twist.angular.z = 0.0
-
-        pub1.publish(twist)
-        pub2.publish(twist)
-        
-        pwm_msg = Int16()
-        pwm_msg.data = 0
-        pubpwm1.publish(pwm_msg)
-        pubpwm2.publish(pwm_msg)
-
-        if os.name != 'nt':
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-    
-    
+    controller = TurtleController()
+    controller.run()
 
 if __name__ == '__main__':
     main()

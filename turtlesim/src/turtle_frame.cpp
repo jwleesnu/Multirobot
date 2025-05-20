@@ -254,6 +254,7 @@ void TurtleFrame::paintEvent(QPaintEvent*)
   }
 
   if (turtles_.size() >= 2) {
+    //while displaying, remind that the axes are opposite to we think.
       auto it1 = turtles_.begin();
       auto it2 = std::next(it1);
 
@@ -265,6 +266,7 @@ void TurtleFrame::paintEvent(QPaintEvent*)
 
       float midtheta = it1->second->getTheta();
       float midvel = it1->second->getLinVel();
+      float midangvel = it1->second->getAngVel();
       float base_angle = atan2(position2.y() - position1.y(), position2.x() - position1.x());
       
       midtheta = -midtheta;
@@ -274,6 +276,21 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       float centerX = (position1.x() + position2.x()) / 2.0;
       float centerY = (position1.y() + position2.y()) / 2.0;
       QPointF red_dot(centerX * meter_, centerY * meter_);
+
+
+      // //Calculate the center of object rotation
+      // enum CENTER_OF_ROTATION_CASE{
+      //   THETA_NEAR_PI_2,
+      //   THETA_NEAR_3PI_2,
+      //   LEFT_HAND_ROTATION,
+      //   RIGHT_HAND_ROTATION
+      // };
+      // CENTER_OF_ROTATION_CASE center_of_rotation_case;
+
+
+      // if(abs(midangvel) > 0.0001)
+      // {
+      // }
       
       red_dots_.append(red_dot);
       painter.setPen(Qt::red);
@@ -309,22 +326,19 @@ void TurtleFrame::paintEvent(QPaintEvent*)
 
       // Update rectangle position based on midpoint movement
       if (rect_initialized_) {
-          // Get velocities from the first turtle
-          float lin_vel = it1->second->getLinVel();
-          float ang_vel = it1->second->getAngVel();
           
           // Calculate time step
           float dt = 0.001 * update_timer_->interval();
           
           // Calculate new position based on linear velocity
-          float dx = lin_vel * cos(midtheta) * dt;
-          float dy = lin_vel * sin(midtheta) * dt;
+          float dx = midvel * cos(midtheta) * dt;
+          float dy = midvel * sin(midtheta) * dt;
           
           // Move rectangle
           current_rect_.translate(-dx * meter_, -dy * meter_);
           
           // Update total rotation
-          total_rotation_ += ang_vel * dt * 180.0 / PI;  // Convert to degrees
+          total_rotation_ += midangvel * dt * 180.0 / PI;  // Convert to degrees
           QPointF center = current_rect_.center();
           
           // Create transformation matrix

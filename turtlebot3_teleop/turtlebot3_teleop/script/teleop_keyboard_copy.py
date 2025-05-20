@@ -61,8 +61,8 @@ BURGER_MAX_ANG_VEL = 100#2.84/2
 WAFFLE_MAX_LIN_VEL = 100#0.26/2
 WAFFLE_MAX_ANG_VEL = 100#1.82/2
 
-LIN_VEL_STEP_SIZE = 0.01
-ANG_VEL_STEP_SIZE = 0.1
+LIN_VEL_STEP_SIZE = 0.02
+ANG_VEL_STEP_SIZE = 0.02
 
 TURTLEBOT3_MODEL = os.environ['TURTLEBOT3_MODEL']
 
@@ -227,6 +227,7 @@ def main():
     ###### for simulation
     pub3 = node.create_publisher(Twist, '/turtle3/cmd_vel', qos)
     pubmid = node.create_publisher(Pose,'/mid_point/pose',qos)
+    pubdes = node.create_publisher(Twist, '/desired/cmd_vel',qos)
     ######
     qossub1 = QoSProfile(depth=10)
     qossub2 = QoSProfile(depth=10)
@@ -348,7 +349,8 @@ def main():
             #control_linear_velocity1 = 0.0
             #control_linear_velocity2 = 0.0
             if control_first and control_second: # constraints should be defined
-                base_angle = np.arctan2(y2-y1,x2-x1)
+                base_angle = np.arctan2(y2-y1,x2 - x1)
+                #print(base_angle/np.pi, 'pi')
                 
                 control_linear_velocity = target_linear_velocity
                 control_angular_velocity = target_angular_velocity
@@ -476,7 +478,7 @@ def main():
                     #target_linear_velocity3 = -control_angular_velocity * np.linalg.norm(np.array([l3 * np.cos(pose_theta3) - x , l3 * np.sin(pose_theta3) - y]))
                     # print('x = ',x, 'y = ',y)
                     # print('rho = ',rho, 'psi =',psi/np.pi,'pi ', 'target_theta1 =', target_theta1/np.pi,'pi ','target_theta2 = ',target_theta2/np.pi,'pi ','target_linear_velocity1 = ',target_linear_velocity1,'target_linear_velocity2 = ',target_linear_velocity2)
-                print('target_theta3',target_theta3/np.pi,'pi','vel_theta3',target_linear_velocity3)
+                # print('target_theta3',target_theta3/np.pi,'pi','vel_theta3',target_linear_velocity3)
                 K_p = 2
 
                 twist1 = Twist()
@@ -491,7 +493,7 @@ def main():
                 twist3.linear.x = target_linear_velocity3
                 twist3.linear.y = 0.0
                 twist3.linear.z = 0.0
-                
+                #print( 'target', (target_theta1 + base_angle + 2.5 / l *control_angular_velocity )/np.pi,'pi')
                 angle_diff1 = (target_theta1 + base_angle + 2.5 / l *control_angular_velocity - theta1) % (2 * np.pi)
     
                 # 음수 값 처리
@@ -529,16 +531,27 @@ def main():
                 twist3.angular.y = 0.0
                 twist3.angular.z = K_p * angle_diff3
 
+                twistdes = Twist()
+                twistdes.linear.x = control_linear_velocity
+                twistdes.linear.y = 0.0
+                twistdes.linear.z = 0.0
+                twistdes.angular.x = base_angle #####
+                twistdes.angular.y = theta_steer ###
+                twistdes.angular.z = control_angular_velocity
+
                 ####simulation
                 posemid = Pose()
+                posemid.x = (x1+x2)/2
+                posemid.y = (y1+y2)/2
                 posemid.theta = theta_steer
                 posemid.linear_velocity = control_linear_velocity
-                posemid.angular_velocity = control_angular_velocity
+                posemid.angular_velocity = control_angular_velocity #base_angle
                 ####
                 pub1.publish(twist1)
                 pub2.publish(twist2)
                 pub3.publish(twist3)
                 pubmid.publish(posemid)
+                pubdes.publish(twistdes)
                 
             
             else:
