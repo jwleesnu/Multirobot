@@ -33,26 +33,29 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
+#include <yaml-cpp/yaml.h>
 
 #define DEFAULT_BG_R 0x80
-#define DEFAULT_BG_G 0x00
-#define DEFAULT_BG_B 0xff
+#define DEFAULT_BG_G 0x80
+#define DEFAULT_BG_B 0x80
 
 namespace turtlesim
 {
 
 TurtleFrame::TurtleFrame(rclcpp::Node::SharedPtr& node_handle, QWidget* parent, Qt::WindowFlags f)
 : QFrame(parent, f)
-, path_image_(1000, 1000, QImage::Format_ARGB32)
+, path_image_(1600, 1200, QImage::Format_ARGB32)
 , path_painter_(&path_image_)
 , frame_count_(0)
 , id_counter_(0)
+, rect_initialized_(false)
+, total_rotation_(0.0)
 {
-  setFixedSize(1000, 1000);
+  setFixedSize(1600, 1200);
   setWindowTitle("TurtleSim");
 
   srand(time(NULL));
-
   update_timer_ = new QTimer(this);
   update_timer_->setInterval(16);
   update_timer_->start();
@@ -93,7 +96,7 @@ TurtleFrame::TurtleFrame(rclcpp::Node::SharedPtr& node_handle, QWidget* parent, 
     turtle_images_.append(img);
   }
 
-  meter_ = turtle_images_[0].height();
+  meter_ = turtle_images_[0].height(); //45
 
   clear();
 
@@ -110,9 +113,7 @@ TurtleFrame::TurtleFrame(rclcpp::Node::SharedPtr& node_handle, QWidget* parent, 
 
   width_in_meters_ = (width() - 1) / meter_;
   height_in_meters_ = (height() - 1) / meter_;
-  spawnTurtle("", width_in_meters_ / 4.0, height_in_meters_ / 2.0, 0);
-  spawnTurtle("", width_in_meters_ / 20.0, height_in_meters_ / 2.0, 0);
-  spawnTurtle("", width_in_meters_ / 6.667, height_in_meters_ / 2.5, 0);
+  loadTurtles();
 
   // spawn all available turtle types
   if(false)
@@ -267,36 +268,99 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       float base_angle = atan2(position2.y() - position1.y(), position2.x() - position1.x());
       
       midtheta = -midtheta;
-      midtheta +=base_angle;
+      midtheta += base_angle;
       
-      // 중앙 위치 계산
+      // Calculate center position
       float centerX = (position1.x() + position2.x()) / 2.0;
       float centerY = (position1.y() + position2.y()) / 2.0;
-      QPointF red_dot(centerX * meter_, (centerY) * meter_);
+      QPointF red_dot(centerX * meter_, centerY * meter_);
       
       red_dots_.append(red_dot);
       painter.setPen(Qt::red);
       painter.setBrush(Qt::red);
-      painter.drawEllipse(red_dot, 2, 2); // 점 크기 조정
+      painter.drawEllipse(red_dot, 2, 2);
+
+      // Initialize rectangle if not done yet
+      if (!rect_initialized_ && turtles_.size() >= 2) {
+          float min_x = std::numeric_limits<float>::max();
+          float min_y = std::numeric_limits<float>::max();
+          float max_x = std::numeric_limits<float>::lowest();
+          float max_y = std::numeric_limits<float>::lowest();
+
+          for (const auto& turtle : turtles_) {
+              QPointF pos = turtle.second->getposition();
+              min_x = std::min(min_x, static_cast<float>(pos.x()));
+              min_y = std::min(min_y, static_cast<float>(pos.y()));
+              max_x = std::max(max_x, static_cast<float>(pos.x()));
+              max_y = std::max(max_y, static_cast<float>(pos.y()));
+          }
+
+          // Add some padding
+          float padding = 0.1;
+          initial_rect_ = QRectF(
+              (min_x - padding) * meter_,
+              (min_y - padding) * meter_,
+              (max_x - min_x + 2 * padding) * meter_,
+              (max_y - min_y + 2 * padding) * meter_
+          );
+          current_rect_ = initial_rect_;
+          rect_initialized_ = true;
+      }
+
+      // Update rectangle position based on midpoint movement
+      if (rect_initialized_) {
+          // Get velocities from the first turtle
+          float lin_vel = it1->second->getLinVel();
+          float ang_vel = it1->second->getAngVel();
+          
+          // Calculate time step
+          float dt = 0.001 * update_timer_->interval();
+          
+          // Calculate new position based on linear velocity
+          float dx = lin_vel * cos(midtheta) * dt;
+          float dy = lin_vel * sin(midtheta) * dt;
+          
+          // Move rectangle
+          current_rect_.translate(-dx * meter_, -dy * meter_);
+          
+          // Update total rotation
+          total_rotation_ += ang_vel * dt * 180.0 / PI;  // Convert to degrees
+          QPointF center = current_rect_.center();
+          
+          // Create transformation matrix
+          QTransform transform;
+          transform.translate(center.x(), center.y());
+          transform.rotate(-total_rotation_);
+          transform.translate(-center.x(), -center.y());
+          
+          // Apply transformation to rectangle corners
+          QPolygonF rotated_rect;
+          rotated_rect << transform.map(current_rect_.topLeft())
+                      << transform.map(current_rect_.topRight())
+                      << transform.map(current_rect_.bottomRight())
+                      << transform.map(current_rect_.bottomLeft());
+          
+          // Draw rotated rectangle
+          painter.setPen(QPen(Qt::blue, 2));
+          painter.setBrush(Qt::NoBrush);
+          painter.drawPolygon(rotated_rect);
+      }
 
       QPointF arrow_end(red_dot.x() - 100 * midvel * cos(midtheta), red_dot.y() - 100 * midvel * sin(midtheta));
       painter.setPen(Qt::green);
-      painter.drawLine(red_dot,arrow_end);
+      painter.drawLine(red_dot, arrow_end);
 
       QPolygonF arrow_head;
-      float arrow_size=10.0;
-      if (midvel >= 0){
-        QPointF point1 = arrow_end + QPointF(arrow_size * cos(midtheta + M_PI / 6), arrow_size * sin(midtheta + M_PI / 6));
-        QPointF point2 = arrow_end + QPointF(arrow_size * cos(midtheta - M_PI / 6), arrow_size * sin(midtheta - M_PI / 6));
-        arrow_head << arrow_end << point1 << point2;
+      float arrow_size = 10.0;
+      if (midvel >= 0) {
+          QPointF point1 = arrow_end + QPointF(arrow_size * cos(midtheta + M_PI / 6), arrow_size * sin(midtheta + M_PI / 6));
+          QPointF point2 = arrow_end + QPointF(arrow_size * cos(midtheta - M_PI / 6), arrow_size * sin(midtheta - M_PI / 6));
+          arrow_head << arrow_end << point1 << point2;
+      } else {
+          QPointF point1 = arrow_end - QPointF(arrow_size * cos(midtheta + M_PI / 6), arrow_size * sin(midtheta + M_PI / 6));
+          QPointF point2 = arrow_end - QPointF(arrow_size * cos(midtheta - M_PI / 6), arrow_size * sin(midtheta - M_PI / 6));
+          arrow_head << arrow_end << point1 << point2;
       }
-      else{
-        QPointF point1 = arrow_end - QPointF(arrow_size * cos(midtheta + M_PI / 6), arrow_size * sin(midtheta + M_PI / 6));
-        QPointF point2 = arrow_end - QPointF(arrow_size * cos(midtheta - M_PI / 6), arrow_size * sin(midtheta - M_PI / 6));
-        arrow_head << arrow_end << point1 << point2;
-      }
-
-      
 
       painter.setPen(Qt::green);
       painter.setBrush(Qt::green);
@@ -346,9 +410,41 @@ bool TurtleFrame::resetCallback(const std_srvs::srv::Empty::Request::SharedPtr, 
   RCLCPP_INFO(nh_->get_logger(), "Resetting turtlesim.");
   turtles_.clear();
   id_counter_ = 0;
-  spawnTurtle("", width_in_meters_ / 2.0, height_in_meters_ / 2.0, 0);
+  loadTurtles();
   clear();
   return true;
+}
+
+void TurtleFrame::loadTurtles()
+{
+  try {
+    // Get the path to the config file from the installed location
+    std::string config_path = ament_index_cpp::get_package_share_directory("turtlesim") + "/config/config.yaml";
+    RCLCPP_INFO(nh_->get_logger(), "Loading config from: %s", config_path.c_str());
+    YAML::Node config = YAML::LoadFile(config_path);
+    const YAML::Node& turtles = config["turtles"];
+
+    for (const auto& turtle : turtles) {
+      const std::string& name = turtle.first.as<std::string>();
+      const YAML::Node& pos = turtle.second;
+      
+      double x = pos["x"].as<double>();
+      double y = pos["y"].as<double>();
+      double theta = pos["theta"].as<double>();
+      
+      // Convert pixel coordinates to meters
+      x = x / meter_;
+      y = y / meter_;
+      
+      spawnTurtle(name, x, y, theta);
+    }
+  } catch (const YAML::Exception& e) {
+    RCLCPP_ERROR(nh_->get_logger(), "Error loading config file: %s", e.what());
+    // Fallback to default positions if config file fails to load
+    spawnTurtle("", width_in_meters_ / 4.0, height_in_meters_ / 2.0, 0);
+    spawnTurtle("", width_in_meters_ / 20.0, height_in_meters_ / 2.0, 0);
+    spawnTurtle("", width_in_meters_ / 6.667, height_in_meters_ / 2.5, 0);
+  }
 }
 
 }

@@ -18,6 +18,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 include_directories(include ${Qt5Widgets_INCLUDE_DIRS})
 
@@ -46,7 +47,15 @@ qt5_wrap_cpp(turtlesim_node_MOCS ${turtlesim_node_HDRS})
 
 
 add_executable(turtlesim_node ${turtlesim_node_SRCS} ${turtlesim_node_MOCS})
-target_link_libraries(turtlesim_node Qt5::Widgets)
+target_link_libraries(turtlesim_node
+  Qt5::Widgets
+  yaml-cpp
+  ${rclcpp_LIBRARIES}
+  ${rosidl_typesupport_cpp_LIBRARIES}
+  ${rosidl_typesupport_c_LIBRARIES}
+  ${rosidl_typesupport_introspection_cpp_LIBRARIES}
+  ${rosidl_typesupport_introspection_c_LIBRARIES}
+)
 ament_target_dependencies(turtlesim_node ${dependencies})
 rosidl_target_interfaces(turtlesim_node ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
@@ -69,5 +78,9 @@ install(DIRECTORY images
 
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
+
+# Install config file
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../config.yaml
+  DESTINATION share/${PROJECT_NAME}/config)
 
 ament_package()

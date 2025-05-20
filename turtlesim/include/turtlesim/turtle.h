@@ -74,6 +74,9 @@ public:
   float getLinVel() const{
     return lin_vel_mid_;
   }
+  float getAngVel() const{
+    return ang_vel_mid_;
+  }
 private:
   void midpointCallback(const turtlesim::msg::Pose::SharedPtr pose);
   void velocityCallback(const geometry_msgs::msg::Twist::SharedPtr vel);

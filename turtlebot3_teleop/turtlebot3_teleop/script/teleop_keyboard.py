@@ -545,7 +545,7 @@ def main():
                 posemid.y = (y1+y2)/2
                 posemid.theta = theta_steer
                 posemid.linear_velocity = control_linear_velocity
-                posemid.angular_velocity = base_angle
+                posemid.angular_velocity = control_angular_velocity #base_angle
                 ####
                 pub1.publish(twist1)
                 pub2.publish(twist2)

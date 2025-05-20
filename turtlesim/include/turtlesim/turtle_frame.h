@@ -68,9 +68,16 @@ private slots:
   void onUpdate();
 
 private:
+  void loadTurtles();
   void updateTurtles();
   void clear();
   bool hasTurtle(const std::string& name);
+
+  // Rectangle properties
+  QRectF initial_rect_;
+  QRectF current_rect_;
+  bool rect_initialized_;
+  float total_rotation_;  // Track total rotation angle
 
   bool clearCallback(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr);
   bool resetCallback(const std_srvs::srv::Empty::Request::SharedPtr, std_srvs::srv::Empty::Response::SharedPtr);
