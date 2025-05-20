@@ -35,6 +35,8 @@
 #include <ctime>
 #include <fstream>
 #include <yaml-cpp/yaml.h>
+#include <QPainter>
+#include <QFont>
 
 #define DEFAULT_BG_R 0x80
 #define DEFAULT_BG_G 0x80
@@ -260,7 +262,8 @@ void TurtleFrame::paintEvent(QPaintEvent*)
 
       QPointF position1 = it1->second->getposition(); // 첫 번째 거북이 위치
       QPointF position2 = it2->second->getposition(); // 두 번째 거북이 위치
-
+      float centerX = (position1.x() + position2.x()) / 2.0;
+      float centerY = (position1.y() + position2.y()) / 2.0;
       painter.setPen(Qt::red);
       painter.drawLine(position1, position2);
 
@@ -269,29 +272,71 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       float midangvel = it1->second->getAngVel();
       float base_angle = atan2(position2.y() - position1.y(), position2.x() - position1.x());
       
+      
+      
+
+      //Calculate the center of object rotation
+      float center_of_rotation_x = 0, center_of_rotation_y = 0, rho, psi;
+
+
+      if(midangvel * midvel < 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+      {
+        rho = -midvel / midangvel;
+        psi = midtheta - PI/2;
+      }
+      else if(midangvel * midvel > 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+      {
+        rho = midvel / midangvel;
+        psi = midtheta + PI/2;
+      }
+      else if(midangvel * midvel > 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+      {
+        rho = midvel / midangvel;
+        psi = midtheta + PI/2;
+      }
+      else if(midangvel * midvel < 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+      {
+        rho = -midvel / midangvel;
+        psi = midtheta - PI/2;
+      }
+      else{
+        rho = 0;
+        psi = 0;
+      }
+      //print center_of_rotation_case
+      // RCLCPP_INFO(nh_->get_logger(), "Center of rotation case: %d", center_of_rotation_case);
+      center_of_rotation_x = rho * cos(psi - base_angle);
+      center_of_rotation_y = rho * sin(psi - base_angle);
+      //do not know why x has to be subtracted
+      //x 좌표에서 빼는 이유는:
+      //Qt의 화면 좌표계는 오른쪽이 양수, 위쪽이 양수입니다
+      //로봇의 로컬 좌표계에서는 첫 번째 거북이에서 두 번째 거북이 방향이 양수입니다
+      //이 두 좌표계의 방향이 반대이기 때문에 빼주어야 합니다
+      //y 좌표는 더하는 이유는:
+      //Qt의 화면 좌표계와 로봇의 로컬 좌표계에서 y축 방향이 일치하기 때문입니다
+      QPointF center_of_rotation((centerX - center_of_rotation_x) * meter_, (centerY + center_of_rotation_y) * meter_);
+      midtheta -= base_angle;
       midtheta = -midtheta;
-      midtheta += base_angle;
+      
       
       // Calculate center position
-      float centerX = (position1.x() + position2.x()) / 2.0;
-      float centerY = (position1.y() + position2.y()) / 2.0;
+      
       QPointF red_dot(centerX * meter_, centerY * meter_);
 
 
-      // //Calculate the center of object rotation
-      // enum CENTER_OF_ROTATION_CASE{
-      //   THETA_NEAR_PI_2,
-      //   THETA_NEAR_3PI_2,
-      //   LEFT_HAND_ROTATION,
-      //   RIGHT_HAND_ROTATION
-      // };
-      // CENTER_OF_ROTATION_CASE center_of_rotation_case;
-
-
-      // if(abs(midangvel) > 0.0001)
-      // {
-      // }
       
+      
+      // Draw center of rotation point
+      painter.setPen(Qt::black);
+      painter.drawEllipse(center_of_rotation, 2, 2);
+      
+      // Draw 'M' text next to the center of rotation
+      painter.setPen(QPen(Qt::black, 2));
+      QFont font = painter.font();
+      font.setPointSize(12);
+      painter.setFont(font);
+      painter.drawText(center_of_rotation + QPointF(10, 0), "M");
+
       red_dots_.append(red_dot);
       painter.setPen(Qt::red);
       painter.setBrush(Qt::red);

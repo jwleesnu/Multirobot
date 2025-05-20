@@ -2,14 +2,14 @@
 
 turtles:
   turtle1:
-    x: 300  # width_in_meters_ / 4.0
-    y: 300   # height_in_meters_ / 2.0
+    x: 400  # width_in_meters_ / 4.0
+    y: 500   # height_in_meters_ / 2.0
     theta: 0.0
   turtle2:
-    x: 500  # width_in_meters_ / 20.0
-    y: 600   # height_in_meters_ / 2.0
+    x: 300  # width_in_meters_ / 20.0
+    y: 300   # height_in_meters_ / 2.0
     theta: 0.0
   turtle3:
-    x: 400  # width_in_meters_ / 6.667
+    x: 200  # width_in_meters_ / 6.667
     y: 500   # height_in_meters_ / 2.5
     theta: 0.0 
