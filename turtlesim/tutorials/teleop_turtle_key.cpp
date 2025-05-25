@@ -187,17 +187,39 @@ TeleopTurtle::TeleopTurtle():
   rotate_absolute_client_ = rclcpp_action::create_client<turtlesim::action::RotateAbsolute>(nh_, "turtle1/rotate_absolute");
 }
 
+// void TeleopTurtle::sendGoal(float theta)
+// {
+//   auto goal = turtlesim::action::RotateAbsolute::Goal();
+//   goal.theta = theta;
+//   auto send_goal_options = rclcpp_action::Client<turtlesim::action::RotateAbsolute>::SendGoalOptions();
+//   send_goal_options.goal_response_callback =
+//     // [this](std::shared_future<rclcpp_action::ClientGoalHandle<turtlesim::action::RotateAbsolute>::SharedPtr> future)
+//     [this](std::shared_ptr<rclcpp_action::ClientGoalHandle<turtlesim::action::RotateAbsolute>>)
+//     {
+//       RCLCPP_DEBUG(nh_->get_logger(), "Goal response received");
+//       this->goal_handle_ = future.get();
+//     };
+//   rotate_absolute_client_->async_send_goal(goal, send_goal_options);
+// }
+
 void TeleopTurtle::sendGoal(float theta)
 {
   auto goal = turtlesim::action::RotateAbsolute::Goal();
   goal.theta = theta;
+  
   auto send_goal_options = rclcpp_action::Client<turtlesim::action::RotateAbsolute>::SendGoalOptions();
+
   send_goal_options.goal_response_callback =
-    [this](std::shared_future<rclcpp_action::ClientGoalHandle<turtlesim::action::RotateAbsolute>::SharedPtr> future)
+    [this](std::shared_ptr<rclcpp_action::ClientGoalHandle<turtlesim::action::RotateAbsolute>> goal_handle)
     {
-      RCLCPP_DEBUG(nh_->get_logger(), "Goal response received");
-      this->goal_handle_ = future.get();
+      if (!goal_handle) {
+        RCLCPP_ERROR(nh_->get_logger(), "Goal was rejected by server");
+      } else {
+        RCLCPP_INFO(nh_->get_logger(), "Goal accepted by server, waiting for result");
+        this->goal_handle_ = goal_handle;
+      }
     };
+
   rotate_absolute_client_->async_send_goal(goal, send_goal_options);
 }
 
