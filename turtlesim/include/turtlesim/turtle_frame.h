@@ -76,6 +76,7 @@ private:
   // Rectangle properties
   QRectF initial_rect_;
   QRectF current_rect_;
+  QPolygonF rotated_corners_;  // Store rotated corners
   bool rect_initialized_;
   float total_rotation_;  // Track total rotation angle
 

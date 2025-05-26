@@ -318,9 +318,7 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       midtheta -= base_angle;
       midtheta = -midtheta;
       
-      
       // Calculate center position
-      
       QPointF red_dot(centerX * meter_, centerY * meter_);
 
 
@@ -371,33 +369,45 @@ void TurtleFrame::paintEvent(QPaintEvent*)
 
       // Update rectangle position based on midpoint movement
       if (rect_initialized_) {
-          
           // Calculate time step
           float dt = 0.001 * update_timer_->interval();
           
+          // Create transformation matrix for rotation around center_of_rotation
+          QTransform transform;
+          transform.translate(center_of_rotation.x(), center_of_rotation.y());
+          transform.rotate(-midangvel * dt * 180.0 / PI);  // Use instantaneous rotation
+          transform.translate(-center_of_rotation.x(), -center_of_rotation.y());
+
           // Calculate new position based on linear velocity
           float dx = midvel * cos(midtheta) * dt;
           float dy = midvel * sin(midtheta) * dt;
           
           // Move rectangle
-          current_rect_.translate(-dx * meter_, -dy * meter_);
           
-          // Update total rotation
-          total_rotation_ += midangvel * dt * 180.0 / PI;  // Convert to degrees
-          QPointF center = current_rect_.center();
           
-          // Create transformation matrix
-          QTransform transform;
-          transform.translate(center.x(), center.y());
-          transform.rotate(-total_rotation_);
-          transform.translate(-center.x(), -center.y());
-          
-          // Apply transformation to rectangle corners
+          // Apply transformation to current rectangle corners
           QPolygonF rotated_rect;
-          rotated_rect << transform.map(current_rect_.topLeft())
-                      << transform.map(current_rect_.topRight())
-                      << transform.map(current_rect_.bottomRight())
-                      << transform.map(current_rect_.bottomLeft());
+          if (rotated_corners_.isEmpty()) {
+              // First time initialization
+              rotated_rect << current_rect_.topLeft()
+                          << current_rect_.topRight()
+                          << current_rect_.bottomRight()
+                          << current_rect_.bottomLeft();
+          } else {
+              rotated_rect = rotated_corners_;
+          }
+          
+          // Apply rotation to the corners
+          for (int i = 0; i < rotated_rect.size(); ++i) {
+              rotated_rect[i] = transform.map(rotated_rect[i]);
+          }
+          if (midangvel == 0)
+          {
+              rotated_rect.translate(-dx * meter_, -dy * meter_);
+          }
+
+          // Store rotated corners for next frame
+          rotated_corners_ = rotated_rect;
           
           // Draw rotated rectangle
           painter.setPen(QPen(Qt::blue, 2));

@@ -160,7 +160,8 @@ bool Turtle::teleportRelativeCallback(const turtlesim::srv::TeleportRelative::Re
 
 bool Turtle::teleportAbsoluteCallback(const turtlesim::srv::TeleportAbsolute::Request::SharedPtr req, turtlesim::srv::TeleportAbsolute::Response::SharedPtr)
 {
-  teleport_requests_.push_back(TeleportRequest(req->x, req->y, req->theta, 0, false));
+  // Only change theta, ignore x and y
+  teleport_requests_.push_back(TeleportRequest(pos_.x(), pos_.y(), req->theta, 0, false));
   return true;
 }
 
@@ -206,8 +207,8 @@ bool Turtle::update(double dt, QPainter& path_painter, const QImage& path_image,
     }
     else
     {
-      pos_.setX(req.pos.x());
-      pos_.setY(std::max(0.0, static_cast<double>(canvas_height - req.pos.y())));
+      // pos_.setX(req.pos.x());
+      // pos_.setY(std::max(0.0, static_cast<double>(canvas_height - req.pos.y())));
       orient_ = req.theta;
     }
 
