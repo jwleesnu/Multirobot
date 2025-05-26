@@ -276,35 +276,41 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       
 
       //Calculate the center of object rotation
-      float center_of_rotation_x = 0, center_of_rotation_y = 0, rho, psi;
+      float center_of_rotation_x = 0, center_of_rotation_y = 0, rho = 0, psi = 0;
 
+      // Check if angular velocity is too small
+      if (std::abs(midangvel) < 1e-6) {
+          // For very small angular velocity, use a large radius
+          rho = 1000.0;  // Use a large finite value
+          psi = midtheta;
+      } else {
+          if(midangvel * midvel < 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+          {
+              rho = -midvel / midangvel;
+              psi = midtheta - PI/2;
+          }
+          else if(midangvel * midvel > 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+          {
+              rho = midvel / midangvel;
+              psi = midtheta + PI/2;
+          }
+          else if(midangvel * midvel > 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+          {
+              rho = midvel / midangvel;
+              psi = midtheta + PI/2;
+          }
+          else if(midangvel * midvel < 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+          {
+              rho = -midvel / midangvel;
+              psi = midtheta - PI/2;
+          }
+      }
 
-      if(midangvel * midvel < 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
-      {
-        rho = -midvel / midangvel;
-        psi = midtheta - PI/2;
+      // Check for invalid values
+      if (std::isinf(rho) || std::isnan(rho)) {
+          rho = 1000.0;  // Use a large finite value
       }
-      else if(midangvel * midvel > 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
-      {
-        rho = midvel / midangvel;
-        psi = midtheta + PI/2;
-      }
-      else if(midangvel * midvel > 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
-      {
-        rho = midvel / midangvel;
-        psi = midtheta + PI/2;
-      }
-      else if(midangvel * midvel < 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
-      {
-        rho = -midvel / midangvel;
-        psi = midtheta - PI/2;
-      }
-      else{
-        rho = 0;
-        psi = 0;
-      }
-      //print center_of_rotation_case
-      // RCLCPP_INFO(nh_->get_logger(), "Center of rotation case: %d", center_of_rotation_case);
+
       center_of_rotation_x = rho * cos(psi - base_angle);
       center_of_rotation_y = rho * sin(psi - base_angle);
       //do not know why x has to be subtracted
