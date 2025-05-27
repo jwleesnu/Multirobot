@@ -47,7 +47,7 @@ namespace turtlesim
 
 TurtleFrame::TurtleFrame(rclcpp::Node::SharedPtr& node_handle, QWidget* parent, Qt::WindowFlags f)
 : QFrame(parent, f)
-, path_image_(1600, 1200, QImage::Format_ARGB32)
+, path_image_(1920, 1080, QImage::Format_ARGB32)
 , path_painter_(&path_image_)
 , frame_count_(0)
 , id_counter_(0)
@@ -276,35 +276,41 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       
 
       //Calculate the center of object rotation
-      float center_of_rotation_x = 0, center_of_rotation_y = 0, rho, psi;
+      float center_of_rotation_x = 0, center_of_rotation_y = 0, rho = 0, psi = 0;
 
+      // Check if angular velocity is too small
+      if (std::abs(midangvel) < 1e-6) {
+          // For very small angular velocity, use a large radius
+          rho = 1000.0;  // Use a large finite value
+          psi = midtheta;
+      } else {
+          if(midangvel * midvel < 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+          {
+              rho = -midvel / midangvel;
+              psi = midtheta - PI/2;
+          }
+          else if(midangvel * midvel > 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+          {
+              rho = midvel / midangvel;
+              psi = midtheta + PI/2;
+          }
+          else if(midangvel * midvel > 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
+          {
+              rho = midvel / midangvel;
+              psi = midtheta + PI/2;
+          }
+          else if(midangvel * midvel < 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
+          {
+              rho = -midvel / midangvel;
+              psi = midtheta - PI/2;
+          }
+      }
 
-      if(midangvel * midvel < 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
-      {
-        rho = -midvel / midangvel;
-        psi = midtheta - PI/2;
+      // Check for invalid values
+      if (std::isinf(rho) || std::isnan(rho)) {
+          rho = 1000.0;  // Use a large finite value
       }
-      else if(midangvel * midvel > 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
-      {
-        rho = midvel / midangvel;
-        psi = midtheta + PI/2;
-      }
-      else if(midangvel * midvel > 0 && ((midtheta >= 0 && midtheta < PI/2) || (midtheta <= 2*PI && midtheta > 3*PI/2)))
-      {
-        rho = midvel / midangvel;
-        psi = midtheta + PI/2;
-      }
-      else if(midangvel * midvel < 0 && ((midtheta > PI/2 && midtheta < 3*PI/2)))
-      {
-        rho = -midvel / midangvel;
-        psi = midtheta - PI/2;
-      }
-      else{
-        rho = 0;
-        psi = 0;
-      }
-      //print center_of_rotation_case
-      // RCLCPP_INFO(nh_->get_logger(), "Center of rotation case: %d", center_of_rotation_case);
+
       center_of_rotation_x = rho * cos(psi - base_angle);
       center_of_rotation_y = rho * sin(psi - base_angle);
       //do not know why x has to be subtracted
@@ -318,9 +324,7 @@ void TurtleFrame::paintEvent(QPaintEvent*)
       midtheta -= base_angle;
       midtheta = -midtheta;
       
-      
       // Calculate center position
-      
       QPointF red_dot(centerX * meter_, centerY * meter_);
 
 
@@ -371,33 +375,45 @@ void TurtleFrame::paintEvent(QPaintEvent*)
 
       // Update rectangle position based on midpoint movement
       if (rect_initialized_) {
-          
           // Calculate time step
           float dt = 0.001 * update_timer_->interval();
           
+          // Create transformation matrix for rotation around center_of_rotation
+          QTransform transform;
+          transform.translate(center_of_rotation.x(), center_of_rotation.y());
+          transform.rotate(-midangvel * dt * 180.0 / PI);  // Use instantaneous rotation
+          transform.translate(-center_of_rotation.x(), -center_of_rotation.y());
+
           // Calculate new position based on linear velocity
           float dx = midvel * cos(midtheta) * dt;
           float dy = midvel * sin(midtheta) * dt;
           
           // Move rectangle
-          current_rect_.translate(-dx * meter_, -dy * meter_);
           
-          // Update total rotation
-          total_rotation_ += midangvel * dt * 180.0 / PI;  // Convert to degrees
-          QPointF center = current_rect_.center();
           
-          // Create transformation matrix
-          QTransform transform;
-          transform.translate(center.x(), center.y());
-          transform.rotate(-total_rotation_);
-          transform.translate(-center.x(), -center.y());
-          
-          // Apply transformation to rectangle corners
+          // Apply transformation to current rectangle corners
           QPolygonF rotated_rect;
-          rotated_rect << transform.map(current_rect_.topLeft())
-                      << transform.map(current_rect_.topRight())
-                      << transform.map(current_rect_.bottomRight())
-                      << transform.map(current_rect_.bottomLeft());
+          if (rotated_corners_.isEmpty()) {
+              // First time initialization
+              rotated_rect << current_rect_.topLeft()
+                          << current_rect_.topRight()
+                          << current_rect_.bottomRight()
+                          << current_rect_.bottomLeft();
+          } else {
+              rotated_rect = rotated_corners_;
+          }
+          
+          // Apply rotation to the corners
+          for (int i = 0; i < rotated_rect.size(); ++i) {
+              rotated_rect[i] = transform.map(rotated_rect[i]);
+          }
+          if (std::abs(midangvel) < 1e-3)
+          {
+              rotated_rect.translate(-dx * meter_, -dy * meter_);
+          }
+
+          // Store rotated corners for next frame
+          rotated_corners_ = rotated_rect;
           
           // Draw rotated rectangle
           painter.setPen(QPen(Qt::blue, 2));
