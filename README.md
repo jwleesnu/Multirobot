@@ -2,6 +2,9 @@ multirobot simulator
 
 based on turtlesim
 
+config.yaml을 이용해서 소환할 robot의 대수와 위치 지정가능.
+창 크기는 1920 x 1080으로 설정되어 있으니 유의하여 설정할 것.
+
 창하나에서
 
 ```bash
