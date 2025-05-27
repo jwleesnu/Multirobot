@@ -13,3 +13,7 @@ turtles:
     x: 200  # width_in_meters_ / 6.667
     y: 500   # height_in_meters_ / 2.5
     theta: 0.0 
+  turtle4:
+    x: 300
+    y: 400
+    theta: 0.0

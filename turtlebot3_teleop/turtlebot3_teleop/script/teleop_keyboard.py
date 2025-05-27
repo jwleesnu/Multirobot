@@ -41,6 +41,8 @@ import rclpy
 import time
 import threading
 import numpy as np
+import yaml
+from ament_index_python.packages import get_package_share_directory
 
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
@@ -138,13 +140,32 @@ class TurtleController:
         self.node = rclpy.create_node('teleop_keyboard')
         self.qos = QoSProfile(depth=10)
         
+        # Load turtle configurations from config.yaml using ROS2 package system
+        try:
+            turtlesim_share_dir = get_package_share_directory('turtlesim')
+            config_path = os.path.join(turtlesim_share_dir, 'config', 'config.yaml')
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            self.node.get_logger().info(f'Loaded config from: {config_path}')
+        except Exception as e:
+            self.node.get_logger().error(f'Failed to load config: {str(e)}')
+            # Fallback to default configuration
+            config = {
+                'turtles': {
+                    'turtle1': {'x': 400, 'y': 500, 'theta': 0.0},
+                    'turtle2': {'x': 300, 'y': 300, 'theta': 0.0},
+                    'turtle3': {'x': 200, 'y': 500, 'theta': 0.0}
+                }
+            }
+            self.node.get_logger().info('Using default configuration')
+        
         # Create turtles list
         self.turtles = []
-        # Add first two turtles (real robots)
-        self.turtles.append(Turtle(self.node, 'turtle1', is_real=True))
-        self.turtles.append(Turtle(self.node, 'turtle2', is_real=True))
-        # Add additional turtles (simulated)
-        self.turtles.append(Turtle(self.node, 'turtle3'))
+        # Add turtles based on config
+        for turtle_name in config['turtles'].keys():
+            is_real = turtle_name in ['turtle1', 'turtle2']  # First two turtles are real robots
+            self.turtles.append(Turtle(self.node, turtle_name, is_real))
+            self.node.get_logger().info(f'Created turtle: {turtle_name} (real: {is_real})')
         
         # Create midpoint publisher
         self.midpoint_pub = self.node.create_publisher(Pose, '/mid_point/pose', self.qos)
