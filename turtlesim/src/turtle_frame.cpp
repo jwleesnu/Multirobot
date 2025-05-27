@@ -407,7 +407,7 @@ void TurtleFrame::paintEvent(QPaintEvent*)
           for (int i = 0; i < rotated_rect.size(); ++i) {
               rotated_rect[i] = transform.map(rotated_rect[i]);
           }
-          if (midangvel == 0)
+          if (std::abs(midangvel) < 1e-3)
           {
               rotated_rect.translate(-dx * meter_, -dy * meter_);
           }
